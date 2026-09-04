@@ -197,7 +197,7 @@ adapter and delegate to the ACP client.
 | `session/update` — message/thought chunks, tool calls, tool results | ✅ |
 | `session/request_permission` (allow once / always / reject) | ✅ |
 | `session/cancel` → `stopReason: cancelled` | ✅ |
-| `session/load` (resume threads or the configured agent's `default` conversation, with history replay) | ✅ |
+| `session/load` (resume threads or the configured agent's `default` conversation) | ✅ |
 | `session/list` (project-scoped persisted session discovery) | ✅ |
 | Session modes (`session/set_mode`: standard / acceptEdits / unrestricted) | ✅ |
 | Model listing and switching (`configOptions` + `session/set_config_option`) | ✅ |
@@ -217,9 +217,13 @@ processes remain isolated because each resolves `default` against its own
 configured agent. Explicit conversation ids are rejected when they belong to a
 different configured agent.
 
-On every successful load, recent history (up to 200 messages) is replayed as
-`session/update` notifications. The default conversation is not assigned to a
-project or stored in the project-scoped registry. For discovery, the adapter
+On ordinary conversation loads, recent history (up to 200 messages) is replayed as
+`session/update` notifications. The current App Server WebSocket history API does
+not resolve the virtual `default` conversation id, so Main loads without replaying
+its pre-existing transcript; the runtime still attaches to the actual Main
+conversation and retains its server-side context and memory. The default
+conversation is not assigned to a project or stored in the project-scoped registry.
+For discovery, the adapter
 records the working directory of successful ordinary `session/new` and
 `session/load` calls under
 `~/.letta/letta-acp/sessions/`. `session/list` combines those project-scoped

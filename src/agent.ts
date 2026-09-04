@@ -267,11 +267,17 @@ export class LettaAcpAgent {
     if (!isDefaultConversation) {
       await this.rememberSession(state.session.agentId, sessionId, params.cwd);
     }
-    const history = await state.session.listMessages({
-      order: "desc",
-      limit: LOAD_HISTORY_LIMIT,
-    });
-    if (history.hasMore) {
+    const history = isDefaultConversation
+      ? { messages: [], hasMore: false }
+      : await state.session.listMessages({
+          order: "desc",
+          limit: LOAD_HISTORY_LIMIT,
+        });
+    if (isDefaultConversation) {
+      log(
+        "loaded default/Main conversation; historical replay is unavailable over the current App Server WebSocket API",
+      );
+    } else if (history.hasMore) {
       log(
         `session ${sessionId} has more than ${LOAD_HISTORY_LIMIT} messages; replaying the most recent ${LOAD_HISTORY_LIMIT}`,
       );
@@ -516,7 +522,17 @@ export class LettaAcpAgent {
       ? this.client.resumeSession(options.resumeId, sessionOptions)
       : this.client.createSession(options.agentId ?? "", sessionOptions);
     // Force runtime initialization so the conversation id and active model exist.
-    const bootstrap = await session.bootstrapState({ limit: 1 });
+    // Main/default can start normally, but the current App Server history
+    // endpoint does not resolve the virtual "default" conversation id.
+    const bootstrap = options.acpSessionId === DEFAULT_CONVERSATION_SESSION_ID
+      ? await (session as LettaCodeSession & {
+          initialize(): Promise<{
+            agentId: string;
+            conversationId: string;
+            model?: string;
+          }>;
+        }).initialize()
+      : await session.bootstrapState({ limit: 1 });
     if (
       options.expectedAgentId &&
       bootstrap.agentId !== options.expectedAgentId
