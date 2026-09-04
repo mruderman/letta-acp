@@ -197,7 +197,7 @@ adapter and delegate to the ACP client.
 | `session/update` — message/thought chunks, tool calls, tool results | ✅ |
 | `session/request_permission` (allow once / always / reject) | ✅ |
 | `session/cancel` → `stopReason: cancelled` | ✅ |
-| `session/load` (resume threads with history replay) | ✅ |
+| `session/load` (resume threads or the configured agent's `default` conversation, with history replay) | ✅ |
 | `session/list` (project-scoped persisted session discovery) | ✅ |
 | Session modes (`session/set_mode`: standard / acceptEdits / unrestricted) | ✅ |
 | Model listing and switching (`configOptions` + `session/set_config_option`) | ✅ |
@@ -208,11 +208,20 @@ adapter and delegate to the ACP client.
 | Client-side command execution (`terminal/*`) | ❌ (planned) |
 | Plan updates (`plan` from TodoWrite) | ❌ (planned) |
 
-ACP session ids are Letta conversation ids, so `session/load` works across
-adapter restarts when the client already knows the id: the conversation is
-resumed via the SDK and its recent history (up to 200 messages) is replayed as
-`session/update` notifications. For discovery, the adapter records the working
-directory of successful `session/new` and `session/load` calls under
+ACP session ids are normally Letta conversation ids, so `session/load` works
+across adapter restarts when the client already knows the id. The reserved
+session id `default` is the exception: `session/load({ sessionId: "default" })`
+resumes the default/Main conversation of this adapter process's
+`LETTA_AGENT_ID`. It never creates a conversation, and separate adapter
+processes remain isolated because each resolves `default` against its own
+configured agent. Explicit conversation ids are rejected when they belong to a
+different configured agent.
+
+On every successful load, recent history (up to 200 messages) is replayed as
+`session/update` notifications. The default conversation is not assigned to a
+project or stored in the project-scoped registry. For discovery, the adapter
+records the working directory of successful ordinary `session/new` and
+`session/load` calls under
 `~/.letta/letta-acp/sessions/`. `session/list` combines those project-scoped
 records with live conversation titles and timestamps from the configured Letta
 agent; unrelated conversations are not assigned an inferred project. Session
@@ -249,8 +258,11 @@ history ≈ `/resume`).
 
 `src/agent.ts` maps the two protocols:
 
-- Each ACP session becomes a new conversation (`client.createSession`) on one
+- `session/new` creates a conversation (`client.createSession`) on one
   underlying Letta agent, with the ACP `cwd`.
+- `session/load("default")` resumes that agent's default/Main conversation by
+  passing the configured agent id to `client.resumeSession`; ordinary
+  conversation ids are resumed directly.
 - `session/prompt` sends the message and pumps `session.stream()`, translating
   SDK messages (`assistant`, `reasoning`, `tool_call`, `tool_result`) into
   `session/update` notifications.

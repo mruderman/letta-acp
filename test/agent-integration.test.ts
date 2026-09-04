@@ -22,6 +22,7 @@ interface ServerSocket {
 
 class FakeAppServer {
   readonly runtimeStartRequestIds: string[] = [];
+  readonly runtimeStartMessages: WireMessage[] = [];
   readonly createdAgentBodies: WireMessage[] = [];
   readonly createdAgentPinGlobals: unknown[] = [];
   readonly approvalResponses: WireMessage[] = [];
@@ -150,7 +151,14 @@ class FakeAppServer {
     switch (message.type) {
       case "runtime_start": {
         const requestId = requiredString(message.request_id, "runtime_start.request_id");
-        const conversationId = `conv-test-${++this.nextConversation}`;
+        const requestedConversationId =
+          typeof message.conversation_id === "string"
+            ? message.conversation_id
+            : null;
+        const conversationId =
+          requestedConversationId === "default"
+            ? "conv-default"
+            : (requestedConversationId ?? `conv-test-${++this.nextConversation}`);
         const createAgent = message.create_agent as
           | { body?: WireMessage; pin_global?: boolean }
           | undefined;
@@ -165,6 +173,7 @@ class FakeAppServer {
           conversation_id: conversationId,
         };
         this.runtimeStartRequestIds.push(requestId);
+        this.runtimeStartMessages.push(message);
         if (createAgent?.body) {
           this.createdAgentBodies.push(createAgent.body);
           this.createdAgentPinGlobals.push(createAgent.pin_global);
@@ -815,6 +824,70 @@ describe("Agent SDK app-server integration", () => {
       expect(server.createdAgentBodies).toEqual([]);
       expect(server.createdAgentPinGlobals).toEqual([]);
       expect(server.updatedModelPayloads).toEqual([]);
+    } finally {
+      agent.shutdown();
+    }
+  });
+
+  test("loads the configured agent's default conversation through the reserved alias", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "letta-acp-default-"));
+    const scope = "default-test";
+    const registry = new SessionRegistry(directory, scope);
+    const server = new FakeAppServer();
+    const agent = createAgent(server, {
+      sessionRegistryDir: directory,
+      sessionRegistryScope: scope,
+    });
+    const { context } = createContext();
+    const cwd = "/tmp/letta-acp-test";
+    const params = {
+      sessionId: "default",
+      cwd,
+      mcpServers: [],
+    };
+
+    try {
+      await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
+      await agent.loadSession(params, context);
+
+      expect(server.runtimeStartMessages).toHaveLength(1);
+      expect(server.runtimeStartMessages[0]).toMatchObject({
+        agent_id: "agent-test",
+        conversation_id: "default",
+      });
+      expect(server.runtimeStartMessages[0]).not.toHaveProperty(
+        "create_conversation",
+      );
+      expect(await registry.list("agent-test", cwd)).toEqual([]);
+
+      const closedBeforeReload = server.closedSockets;
+      await agent.loadSession(params, context);
+      expect(server.closedSockets).toBeGreaterThan(closedBeforeReload);
+    } finally {
+      agent.shutdown();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a conversation owned by another configured agent", async () => {
+    const server = new FakeAppServer();
+    const agent = createAgent(server, { agentId: "agent-test" });
+    const { context } = createContext();
+
+    try {
+      await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
+      await expect(
+        agent.loadSession(
+          {
+            sessionId: "conv-foreign",
+            cwd: "/tmp/letta-acp-test",
+            mcpServers: [],
+          },
+          context,
+        ),
+      ).rejects.toThrow(
+        "belongs to agent agent-other, not configured agent agent-test",
+      );
     } finally {
       agent.shutdown();
     }

@@ -104,6 +104,8 @@ interface AcpSessionState {
 const LOAD_HISTORY_LIMIT = 200;
 /** Number of project sessions returned in one session/list page. */
 const SESSION_LIST_PAGE_SIZE = 50;
+/** ACP-visible alias for the configured agent's default/Main conversation. */
+const DEFAULT_CONVERSATION_SESSION_ID = "default";
 
 /**
  * Liveness bound for permission requests raised outside a prompt turn.
@@ -143,9 +145,10 @@ const IMAGE_MEDIA_TYPES = new Set([
 /**
  * Bridges ACP v1 (agent side) onto a Letta agent via the Letta Agent SDK.
  *
- * One process serves one ACP connection. Every ACP session becomes a new
- * Letta conversation on a single underlying Letta agent, so the agent's
- * memory persists across sessions and editors.
+ * One process serves one ACP connection. New ACP sessions become new Letta
+ * conversations on a single underlying Letta agent. Clients can also load the
+ * reserved session id "default" to resume that agent's default/Main
+ * conversation, so the agent's memory persists across sessions and editors.
  */
 export class LettaAcpAgent {
   private readonly config: LettaAcpConfig;
@@ -232,22 +235,38 @@ export class LettaAcpAgent {
     params: LoadSessionRequest,
     cx: AgentContext,
   ): Promise<LoadSessionResponse> {
+    const isDefaultConversation =
+      params.sessionId === DEFAULT_CONVERSATION_SESSION_ID;
     if (
+      !isDefaultConversation &&
       !params.sessionId.startsWith("conv-") &&
       !params.sessionId.startsWith("local-conv-")
     ) {
       throw new Error(
-        `Cannot load session ${params.sessionId}: not a Letta conversation id`,
+        `Cannot load session ${params.sessionId}: not "default" or a Letta conversation id`,
       );
     }
+
+    // The SDK resumes an agent's default conversation when given an agent id.
+    // Keep "default" as the ACP-visible id so clients have a stable semantic
+    // handle even if the underlying default conversation id changes.
+    const expectedAgentId = isDefaultConversation
+      ? await this.ensureAgent()
+      : (this.config.agentId ?? null);
     const { sessionId, state } = await this.openSession({
       cwd: params.cwd,
-      resumeId: params.sessionId,
+      resumeId: isDefaultConversation ? expectedAgentId : params.sessionId,
+      acpSessionId: isDefaultConversation
+        ? DEFAULT_CONVERSATION_SESSION_ID
+        : undefined,
+      expectedAgentId,
       agentId: null,
       clientContext: cx,
       mcpServers: params.mcpServers,
     });
-    await this.rememberSession(state.session.agentId, sessionId, params.cwd);
+    if (!isDefaultConversation) {
+      await this.rememberSession(state.session.agentId, sessionId, params.cwd);
+    }
     const history = await state.session.listMessages({
       order: "desc",
       limit: LOAD_HISTORY_LIMIT,
@@ -445,11 +464,12 @@ export class LettaAcpAgent {
   /**
    * Creates or resumes the underlying Letta session and registers state.
    *
-   * The ACP session id is the Letta conversation id, which is what makes
+   * The ACP session id is normally the Letta conversation id, which makes
    * session/load work across adapter restarts with no local persistence. The
-   * id is only known after the runtime initializes, so callbacks close over a
-   * mutable ref that is filled in before any of them can fire (they only run
-   * during prompts).
+   * reserved "default" alias is the exception: it remains client-visible while
+   * the SDK resumes the configured agent id. New-conversation ids are only
+   * known after runtime initialization, so callbacks close over a mutable ref
+   * filled before any of them can fire (they only run during prompts).
    *
    * The harness always runs with permissionMode "standard"; the ACP-selected
    * mode is enforced adapter-side (see session-modes.ts).
@@ -457,11 +477,17 @@ export class LettaAcpAgent {
   private async openSession(options: {
     cwd: string;
     resumeId: string | null;
+    /** Client-visible id when it differs from the SDK resume target. */
+    acpSessionId?: string;
+    /** Reject a resumed conversation owned by another configured agent. */
+    expectedAgentId?: string | null;
     agentId: string | null;
     clientContext: AgentContext;
     mcpServers?: readonly McpServer[];
   }): Promise<{ sessionId: string; state: AcpSessionState }> {
-    const ref = { sessionId: options.resumeId ?? "" };
+    const ref = {
+      sessionId: options.acpSessionId ?? options.resumeId ?? "",
+    };
     const editorTools = createEditorTools(this.clientFsCaps, {
       getSessionId: () => ref.sessionId,
       getClientContext: () =>
@@ -491,7 +517,17 @@ export class LettaAcpAgent {
       : this.client.createSession(options.agentId ?? "", sessionOptions);
     // Force runtime initialization so the conversation id and active model exist.
     const bootstrap = await session.bootstrapState({ limit: 1 });
-    const sessionId = options.resumeId ?? session.conversationId;
+    if (
+      options.expectedAgentId &&
+      bootstrap.agentId !== options.expectedAgentId
+    ) {
+      session.close();
+      throw new Error(
+        `Cannot load conversation ${bootstrap.conversationId}: belongs to agent ${bootstrap.agentId}, not configured agent ${options.expectedAgentId}`,
+      );
+    }
+    const sessionId =
+      options.acpSessionId ?? options.resumeId ?? session.conversationId;
     if (!sessionId) {
       session.close();
       throw new Error("Letta session did not report a conversation id");
