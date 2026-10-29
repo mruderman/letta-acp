@@ -83,10 +83,12 @@ jobs:
           ' "$response"
 
   # Keep credentials on trusted main-branch code. Pull requests still run the
-  # deterministic acpx suite above, including forks and Dependabot.
+  # deterministic acpx suite above, including forks and Dependabot. Dependabot
+  # branches live in this repository, so the head-repo check alone admits them,
+  # yet their runs receive no Actions secrets and these jobs can only fail.
   live-local:
     name: Live local backend
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'push' || (github.actor != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -110,7 +112,7 @@ jobs:
 
   live-cloud:
     name: Live Cloud backend
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'push' || (github.actor != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 10
 

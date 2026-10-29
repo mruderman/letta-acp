@@ -12,6 +12,12 @@ updates:
     allow:
       - dependency-name: "@letta-ai/*"
     versioning-strategy: "increase"
+    # letta-agent-sdk declares letta-code as a peer dependency, so the two must
+    # move together; separate PRs leave the manifest outside the SDK's range.
+    groups:
+      letta:
+        patterns:
+          - "@letta-ai/*"
     labels:
       - "dependencies"
     commit-message:
